@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 #
-# push_to_bitbucket.sh — one-shot bootstrap helper
+# push_to_bitbucket.sh — Bitbucket Cloud bootstrap / sync helper
 #
-# Creates a brand-new Bitbucket Cloud repository in an existing workspace and
-# pushes the current local git repo to it. Designed to be run once when you
-# need a fresh Bitbucket target (e.g. to end-to-end test the eval kit's
-# --platform bitbucket path).
+# Creates a Bitbucket Cloud repository in an existing workspace and pushes the
+# current local git repo to it. Designed for end-to-end testing the eval kit's
+# --platform bitbucket path, but also handy any time you want to mirror a local
+# tree to Bitbucket without clicking through the UI.
+#
+# Default behaviour: create a *brand-new* repo and fail loudly if one already
+# exists at <workspace>/<slug>. Pass --reuse-existing to instead push into the
+# repo that's already there (no create attempt is treated as fatal).
 #
 # Prerequisites
 # -------------
@@ -15,15 +19,21 @@
 #     via the Bitbucket API. Create one in the browser:
 #       https://bitbucket.org → avatar (top-right) → All workspaces → Create workspace
 #   • A Bitbucket access token. Pick one of:
-#       (a) Workspace/Repository/Project Access Token (Bearer auth — preferred)
-#             export BITBUCKET_TOKEN="ATBB..."
+#       (a) Workspace / Repository / Project Access Token  — Bearer auth (preferred)
+#             export BITBUCKET_TOKEN="ATBB..."           # leave BITBUCKET_USERNAME unset
 #             scopes: repository, repository:admin, pullrequest
-#       (b) Atlassian account API token (Bearer auth)
-#             export BITBUCKET_TOKEN="..."
-#       (c) Legacy App Password (HTTP Basic auth — also needs username)
+#       (b) Atlassian account API token (ATATT…)         — HTTP Basic auth (email:token)
+#             export BITBUCKET_TOKEN="ATATT…"
+#             export BITBUCKET_USERNAME="you@example.com"   # your Atlassian email
+#             note: REST API only by default; for git over HTTPS the token must
+#                   have been created with Bitbucket repository scopes.
+#       (c) Legacy App Password                          — HTTP Basic auth
 #             export BITBUCKET_TOKEN="your_app_password"
 #             export BITBUCKET_USERNAME="your_bitbucket_username"
 #             scopes: Repositories: Admin, Pull requests: Read
+#
+#   The script picks Basic vs Bearer automatically based on whether
+#   BITBUCKET_USERNAME is set.
 #
 # Usage
 # -----
@@ -38,7 +48,7 @@
 #
 # Options:
 #   -w, --workspace WORKSPACE   Bitbucket workspace slug (required)
-#   -r, --repo      REPO_SLUG   New repository slug to create (required)
+#   -r, --repo      REPO_SLUG   Target repository slug (required)
 #   -p, --project   PROJECT_KEY Existing project key in the workspace
 #                                 (optional; Bitbucket auto-creates one otherwise)
 #   -b, --branch    BRANCH      Branch to push (default: current branch)
@@ -46,12 +56,25 @@
 #                                 (default: "Snapshot for Bitbucket bootstrap")
 #       --public                Create as a public repo (default: private)
 #       --remote    NAME        Local git remote name to add (default: bitbucket)
+#       --reuse-existing        If <workspace>/<slug> already exists, skip the
+#                                 create step and push to it instead of failing.
+#       --force-push            Use `git push --force-with-lease` (use with
+#                                 --reuse-existing to overwrite a divergent
+#                                 remote branch). Off by default.
 #   -h, --help                  Show this help and exit
 #
-# Example
-# -------
+# Examples
+# --------
+#   # (a) brand-new repo
 #   export BITBUCKET_TOKEN="ATBB..."
 #   ./push_to_bitbucket.sh -w eval-test -r lh2-datalabs-eval-kit
+#
+#   # (b) push into a repo that already exists in the workspace
+#   ./push_to_bitbucket.sh -w eval-test -r lh2-datalabs-eval-kit --reuse-existing
+#
+#   # (c) same, but overwrite the remote branch
+#   ./push_to_bitbucket.sh -w eval-test -r lh2-datalabs-eval-kit \
+#     --reuse-existing --force-push
 
 set -euo pipefail
 
@@ -63,9 +86,11 @@ BRANCH=""
 IS_PRIVATE="true"
 REMOTE_NAME="bitbucket"
 SNAPSHOT_MSG="Snapshot for Bitbucket bootstrap"
+REUSE_EXISTING="false"
+FORCE_PUSH="false"
 
 usage() {
-  sed -n '2,/^# Example$/p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^# Examples$/p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -77,6 +102,8 @@ while [[ $# -gt 0 ]]; do
     -m|--message)    SNAPSHOT_MSG="${2:?missing value for $1}"; shift 2 ;;
     --remote)        REMOTE_NAME="${2:?missing value for $1}"; shift 2 ;;
     --public)        IS_PRIVATE="false"; shift ;;
+    --reuse-existing) REUSE_EXISTING="true"; shift ;;
+    --force-push)    FORCE_PUSH="true"; shift ;;
     -h|--help)       usage; exit 0 ;;
     *) echo "❌ Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -162,23 +189,52 @@ HTTP_CODE="$(
     "$API_URL"
 )"
 
-if [[ "$HTTP_CODE" != "200" && "$HTTP_CODE" != "201" ]]; then
+RESP_BODY="$(cat "$HTTP_RESP_FILE")"
+
+# Detect Bitbucket's "this repo already exists" response. Bitbucket returns 400
+# for this case (not 409, despite what you'd expect); the discriminator is the
+# message body. We match on a stable substring so we don't get tripped up by
+# punctuation changes in the API response.
+already_exists() {
+  [[ "$HTTP_CODE" == "400" ]] && \
+    grep -qiE 'Repository with this (Slug|Name) and Owner already exists|already has a repository with this name' <<<"$RESP_BODY"
+}
+
+if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "201" ]]; then
+  echo "✅ Created: https://bitbucket.org/${WORKSPACE}/${REPO_SLUG}"
+elif already_exists; then
+  if [[ "$REUSE_EXISTING" == "true" ]]; then
+    echo "✓ Repo already exists at ${WORKSPACE}/${REPO_SLUG} — skipping create, will push to it."
+  else
+    echo "❌ Repo already exists at ${WORKSPACE}/${REPO_SLUG} (HTTP 400):" >&2
+    echo "── response ──" >&2
+    echo "$RESP_BODY" >&2
+    echo "" >&2
+    echo "── hints ──" >&2
+    echo "  • Re-run with --reuse-existing to push to the existing repo instead." >&2
+    echo "  • Or pick a different -r/--repo slug to create a fresh one." >&2
+    echo "  • Add --force-push (with --reuse-existing) to overwrite a divergent remote branch." >&2
+    exit 1
+  fi
+else
   echo "❌ Failed to create repo (HTTP $HTTP_CODE):" >&2
   echo "── response ──" >&2
-  cat "$HTTP_RESP_FILE" >&2
+  echo "$RESP_BODY" >&2
   echo "" >&2
   echo "── hints ──" >&2
   case "$HTTP_CODE" in
-    400) echo "  • 400 often means the repo slug is invalid or the workspace doesn't exist." >&2;;
-    401) echo "  • 401: token rejected. If it's an App Password, set BITBUCKET_USERNAME too." >&2;;
+    400) echo "  • 400: bad request. Check the repo slug (lowercase a-z, 0-9, hyphens) and workspace slug." >&2;;
+    401) echo "  • 401: token rejected." >&2
+         echo "    - If it's an Atlassian-account API token (ATATT…), set BITBUCKET_USERNAME=your_email." >&2
+         echo "    - If it's a Workspace/Repo Access Token, leave BITBUCKET_USERNAME unset (Bearer auth)." >&2;;
     403) echo "  • 403: token lacks scope. Need 'repository:admin' to create repos." >&2;;
-    404) echo "  • 404: workspace '${WORKSPACE}' not found, or token can't see it." >&2;;
-    409) echo "  • 409: a repo at '${WORKSPACE}/${REPO_SLUG}' already exists." >&2;;
+    404) echo "  • 404: workspace '${WORKSPACE}' not found, or token can't see it." >&2
+         echo "    - List visible workspaces:  curl -sS \"\${CURL_AUTH[@]}\" \\" >&2
+         echo "        https://api.bitbucket.org/2.0/workspaces | jq -r '.values[].slug'" >&2;;
+    409) echo "  • 409: a repo at '${WORKSPACE}/${REPO_SLUG}' already exists. Re-run with --reuse-existing." >&2;;
   esac
   exit 1
 fi
-
-echo "✅ Created: https://bitbucket.org/${WORKSPACE}/${REPO_SLUG}"
 
 # ── 2) push current branch ───────────────────────────────────────────────────
 if [[ -n "${BITBUCKET_USERNAME:-}" ]]; then
@@ -189,8 +245,13 @@ else
   PUSH_URL="https://x-token-auth:${BITBUCKET_TOKEN}@bitbucket.org/${WORKSPACE}/${REPO_SLUG}.git"
 fi
 
-echo "→ Pushing '${BRANCH}' to Bitbucket …"
-git push "$PUSH_URL" "${BRANCH}:${BRANCH}"
+if [[ "$FORCE_PUSH" == "true" ]]; then
+  echo "→ Pushing '${BRANCH}' to Bitbucket (--force-with-lease) …"
+  git push --force-with-lease "$PUSH_URL" "${BRANCH}:${BRANCH}"
+else
+  echo "→ Pushing '${BRANCH}' to Bitbucket …"
+  git push "$PUSH_URL" "${BRANCH}:${BRANCH}"
+fi
 
 # ── 3) add a clean (credential-less) remote for future pushes ────────────────
 REMOTE_URL_CLEAN="https://bitbucket.org/${WORKSPACE}/${REPO_SLUG}.git"
