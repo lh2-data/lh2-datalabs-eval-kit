@@ -114,6 +114,22 @@ A token is like a special password that lets this tool read your projects.
 4. Click **"Create personal access token"**
 5. **Copy the token right away** (starts with `glpat-`)
 
+#### If your projects are on **Bitbucket Cloud**:
+
+You have three working token types. Any one of these is enough for `BITBUCKET_TOKEN`:
+
+1. **Repository / Workspace / Project Access Token** *(recommended)*
+   - Bitbucket → Repository (or Workspace) **Settings** → **Access tokens**
+   - Click **Create token**
+   - Tick scopes: ☑️ **repository** and ☑️ **pullrequest**
+   - Copy the token (starts with `ATBB...`)
+2. **Account API token**
+   - Atlassian → **Manage account** → **Security** → **API tokens** → **Create API token**
+3. **App Password** *(legacy)*
+   - Bitbucket → **Personal settings** → **App passwords** → **Create app password**
+   - Tick: ☑️ **Repositories: Read** and ☑️ **Pull requests: Read**
+   - **You will also need your Bitbucket username** (set `BITBUCKET_USERNAME`)
+
 #### If your projects are in **Subversion (SVN)**:
 
 SVN servers usually ask for a **username and password** (not a Git-style API token). The evaluator uses:
@@ -139,7 +155,15 @@ echo "GITHUB_TOKEN=ghp_PASTE_YOUR_TOKEN_HERE" > .env
 echo "GITLAB_TOKEN=glpat-PASTE_YOUR_TOKEN_HERE" > .env
 ```
 
+**Bitbucket users (Access Token or API token):**
+```
+echo "BITBUCKET_TOKEN=ATBB-PASTE_YOUR_TOKEN_HERE" > .env
+```
 
+**Bitbucket users (App Password — also need username):**
+```
+printf "BITBUCKET_TOKEN=PASTE_APP_PASSWORD_HERE\nBITBUCKET_USERNAME=your_bitbucket_username\n" > .env
+```
 
 **SVN users** (optional — you can pass username and password on the command line instead):
 
@@ -187,6 +211,18 @@ python repo_evaluator.py acme-corp/billing-service --json --output results.json
 
 ```
 python repo_evaluator.py gitlab:acme-corp/billing-service --platform gitlab --json --output results.json
+```
+
+### Bitbucket Cloud project
+
+```
+python repo_evaluator.py bitbucket:acme-workspace/billing-service --platform bitbucket --json --output results.json
+```
+
+**Using an App Password instead of an Access Token** (also requires your username):
+
+```
+python repo_evaluator.py bitbucket:acme-workspace/billing-service --platform bitbucket --token YOUR_APP_PASSWORD --bitbucket-username your_username --json --output results.json
 ```
 
 ### Faster version (skips slower AI-powered checks)
@@ -298,6 +334,11 @@ python run_all_repos.py --dry-run
 python run_all_repos.py --platform gitlab --dry-run
 ```
 
+**Bitbucket Cloud:**
+```
+python run_all_repos.py --platform bitbucket --dry-run
+```
+
 You'll see a list like this:
 
 ```
@@ -330,6 +371,11 @@ python run_all_repos.py --run
 **GitLab:**
 ```
 python run_all_repos.py --platform gitlab --run
+```
+
+**Bitbucket Cloud:**
+```
+python run_all_repos.py --platform bitbucket --run
 ```
 
 **Faster version (recommended for large organizations):**
@@ -512,6 +558,8 @@ Each project's report tells you:
 | **It's running very slowly** | Use the "faster version" commands shown above — they skip the time-consuming AI analysis steps. |
 | **Commands don't work after I re-open Terminal** | You need to re-activate the tool every time: run `cd lh2-datalabs-eval-kit` then `source .venv/bin/activate` |
 | **GitLab: "insufficient_granular_scope"** | Your token is missing scopes. Re-create it with `read_api`, `read_repository`, and `read_user` checked. |
+| **Bitbucket: 401 / "Unauthorized"** | If your token is an **App Password**, you must also pass `--bitbucket-username YOUR_USER` (or set `BITBUCKET_USERNAME`). Access Tokens and API tokens don't need a username. |
+| **Bitbucket: 403 on pull requests** | Your Access Token is missing scopes. Re-create with `repository` + `pullrequest`. |
 | **Local: "Local path is not a directory"** | The path you gave doesn't exist or isn't a folder. Double-check it with `ls /your/path`. |
 | **SVN: "svn checkout failed"** | Check the URL, username, and password. Try `--svn-trust-cert` if HTTPS uses an internal certificate. Confirm `svn --version` works. |
 | **SVN: SSL or certificate errors** | Add `--svn-trust-cert` to `repo_evaluator.py`. For bulk runs, add `--svn-trust-cert` to `bulk_svn_evaluator.py`. |
@@ -525,12 +573,16 @@ Each project's report tells you:
 |---|---|
 | See all your GitHub repos (preview) | `python run_all_repos.py --dry-run` |
 | See all your GitLab repos (preview) | `python run_all_repos.py --platform gitlab --dry-run` |
+| See all your Bitbucket repos (preview) | `python run_all_repos.py --platform bitbucket --dry-run` |
 | Evaluate **all** GitHub repos | `python run_all_repos.py --run` |
 | Evaluate **all** GitLab repos | `python run_all_repos.py --platform gitlab --run` |
+| Evaluate **all** Bitbucket repos | `python run_all_repos.py --platform bitbucket --run` |
 | Evaluate all repos **(fast mode)** | `python run_all_repos.py --run --evaluator-args "--skip-f2p --skip-quality-checks --skip-taxonomy --skip-pr-rubrics"` |
 | Evaluate only one organization | `python run_all_repos.py --run --org my-org-name` |
 | Evaluate **one** GitHub project | `python repo_evaluator.py owner/repo --json --output results.json` |
 | Evaluate **one** GitLab project | `python repo_evaluator.py gitlab:group/repo --platform gitlab --json --output results.json` |
+| Evaluate **one** Bitbucket project | `python repo_evaluator.py bitbucket:workspace/repo --platform bitbucket --json --output results.json` |
+| Evaluate Bitbucket project with App Password | `python repo_evaluator.py bitbucket:workspace/repo --platform bitbucket --token APP_PW --bitbucket-username USER --json --output results.json` |
 | Evaluate a **local folder** | `python repo_evaluator.py /path/to/project --json --output results.json` |
 | Evaluate **current directory** | `python repo_evaluator.py . --json --output results.json` |
 | Evaluate **one** SVN project | `python repo_evaluator.py https://svn.example.com/proj/trunk --platform svn --json --output results.json --svn-username USER --token PASS` |

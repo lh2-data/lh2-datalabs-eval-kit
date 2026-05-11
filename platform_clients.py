@@ -3,7 +3,7 @@ from datetime import datetime
 import logging
 import re
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -383,27 +383,52 @@ class GitHubClient(PlatformClient):
 
 
 class BitbucketClient(PlatformClient):
-    def __init__(self, owner: str, repo_name: str, token: Optional[str] = None):
+    def __init__(
+        self,
+        owner: str,
+        repo_name: str,
+        token: Optional[str] = None,
+        username: Optional[str] = None,
+    ):
         super().__init__(owner, repo_name, token)
         self.base_url = "https://api.bitbucket.org/2.0"
+        self.username = username
         self.headers = {"Accept": "application/json"}
-        if self.token:
-            self.headers["Authorization"] = f"Bearer {self.token}"
+        # Two auth flavours:
+        #   • username + token  → HTTP Basic (App Password style)
+        #   • token only        → Authorization: Bearer (Workspace/Repo Access Token, API token, OAuth)
+        if self.token and self.username:
+            self.auth: Optional[Tuple[str, str]] = (self.username, self.token)
+        else:
+            self.auth = None
+            if self.token:
+                self.headers["Authorization"] = f"Bearer {self.token}"
 
     def fetch_prs(self, cursor: Optional[str] = None, page_size: int = 50, start_date: Optional[datetime] = None) -> dict:
+        # Bitbucket pagination is always a full `next` URL — page numbers don't
+        # round-trip cleanly with BQL `q`, so we rely on the cursor URL once it's set.
         if cursor and cursor.startswith("http"):
             request_url = cursor
             params = None
         else:
             request_url = f"{self.base_url}/repositories/{self.owner}/{self.repo_name}/pullrequests"
-            params = {"state": "MERGED", "pagelen": page_size, "sort": "-created_on"}
-            if cursor:
-                params["page"] = cursor
+            params = {"pagelen": page_size, "sort": "-created_on"}
+            # Build a BQL `q` expression so `state` and `created_on` are combined
+            # instead of supplying `state` separately (which Bitbucket rejects
+            # alongside a `q` containing another `state` clause).
+            q_parts = ['state="MERGED"']
             if start_date:
-                params["q"] = f"created_on>={start_date.isoformat()}"
+                q_parts.append(f'created_on>={start_date.isoformat()}')
+            params["q"] = " AND ".join(q_parts)
 
         def _make_request():
-            response = requests.get(request_url, headers=self.headers, params=params, timeout=30)
+            response = requests.get(
+                request_url,
+                headers=self.headers,
+                params=params,
+                auth=self.auth,
+                timeout=30,
+            )
             response.raise_for_status()
             return response.json()
 
@@ -415,7 +440,12 @@ class BitbucketClient(PlatformClient):
             if files_url:
                 try:
                     def _get_files():
-                        files_response = requests.get(files_url, headers=self.headers, timeout=30)
+                        files_response = requests.get(
+                            files_url,
+                            headers=self.headers,
+                            auth=self.auth,
+                            timeout=30,
+                        )
                         files_response.raise_for_status()
                         return files_response.json()
 
@@ -490,7 +520,7 @@ class BitbucketClient(PlatformClient):
             url = f"{self.base_url}/repositories/{self.owner}/{self.repo_name}/issues/{issue_number}"
 
             def _make_request():
-                response = requests.get(url, headers=self.headers, timeout=30)
+                response = requests.get(url, headers=self.headers, auth=self.auth, timeout=30)
                 response.raise_for_status()
                 return response.json()
 
@@ -509,6 +539,12 @@ class BitbucketClient(PlatformClient):
 
     def get_repo_url(self, include_token: bool = False) -> str:
         if include_token and self.token:
+            # username + app password → embed as Basic-auth URL.
+            # workspace/repo access token → x-token-auth:<token>.
+            if self.username:
+                user_quoted = requests.utils.quote(self.username, safe="")
+                token_quoted = requests.utils.quote(self.token, safe="")
+                return f"https://{user_quoted}:{token_quoted}@bitbucket.org/{self.repo_full_name}.git"
             return f"https://x-token-auth:{self.token}@bitbucket.org/{self.repo_full_name}.git"
         return f"https://bitbucket.org/{self.repo_full_name}.git"
 
@@ -533,18 +569,25 @@ class BitbucketClient(PlatformClient):
             url = f"{self.base_url}/repositories/{self.owner}/{self.repo_name}"
 
             def _make_request():
-                response = requests.get(url, headers=self.headers, timeout=30)
+                response = requests.get(url, headers=self.headers, auth=self.auth, timeout=30)
                 response.raise_for_status()
                 return response.json()
 
             repo_data = retry_api_call(_make_request)
             language = repo_data.get("language")
+            # Bitbucket only returns a single primary language string. We return
+            # it as a dict so the rest of the evaluator (which expects byte
+            # weights) keeps working; downstream code uses max(d, key=d.get).
             return {language: 1} if language else None
         except Exception as e:
             logger.debug(f"Failed to fetch repository language from Bitbucket API: {e}")
             return None
 
     def fetch_issue_count(self) -> dict:
+        # NOTE: The Bitbucket issue tracker is opt-in and disabled by default on
+        # most modern repos, so this endpoint commonly 404s. We swallow that
+        # quietly and return zeros — teams using Jira have no Bitbucket-side
+        # issue count to surface anyway.
         try:
             base = f"{self.base_url}/repositories/{self.owner}/{self.repo_name}/issues"
 
@@ -554,6 +597,7 @@ class BitbucketClient(PlatformClient):
                         base,
                         headers=self.headers,
                         params={"q": state_query, "pagelen": 1},
+                        auth=self.auth,
                         timeout=30,
                     )
                     response.raise_for_status()
@@ -573,7 +617,7 @@ class BitbucketClient(PlatformClient):
             url = f"{self.base_url}/repositories/{self.owner}/{self.repo_name}/diff/{base_commit}..{head_commit}"
 
             def _make_request():
-                response = requests.get(url, headers=self.headers, timeout=30)
+                response = requests.get(url, headers=self.headers, auth=self.auth, timeout=30)
                 response.raise_for_status()
                 return response.text
 

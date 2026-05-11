@@ -3796,12 +3796,24 @@ def checkout_svn_repo(
 
 
 def clone_repo(
-    repo_full_name: str, temp_dir: Path, token: str, platform: str = "github"
+    repo_full_name: str,
+    temp_dir: Path,
+    token: str,
+    platform: str = "github",
+    bitbucket_username: Optional[str] = None,
 ) -> Path:
     """Clone repository to temporary directory."""
 
     if platform == "bitbucket":
-        repo_url = f"https://x-token-auth:{token}@bitbucket.org/{repo_full_name}.git"
+        if bitbucket_username:
+            user_quoted = urllib.parse.quote(bitbucket_username, safe="")
+            token_quoted = urllib.parse.quote(token, safe="")
+            repo_url = (
+                f"https://{user_quoted}:{token_quoted}"
+                f"@bitbucket.org/{repo_full_name}.git"
+            )
+        else:
+            repo_url = f"https://x-token-auth:{token}@bitbucket.org/{repo_full_name}.git"
     elif platform == "gitlab":
         repo_url = f"https://oauth2:{token}@gitlab.com/{repo_full_name}.git"
     else:  # default to github
@@ -3896,6 +3908,13 @@ def main():
         "--svn-username",
         default=None,
         help="SVN username for checkout (or set SVN_USERNAME)",
+    )
+    parser.add_argument(
+        "--bitbucket-username",
+        default=None,
+        help="Bitbucket username for App Password (HTTP Basic) auth — only needed "
+             "when --token is an App Password rather than a Bitbucket Access Token "
+             "(or set BITBUCKET_USERNAME)",
     )
     parser.add_argument(
         "--svn-trust-cert",
@@ -4027,6 +4046,7 @@ def main():
 
     svn_url = ""
     svn_user = args.svn_username or os.environ.get("SVN_USERNAME")
+    bitbucket_user = args.bitbucket_username or os.environ.get("BITBUCKET_USERNAME")
 
     # Parse repo name / SVN URL / local path
     if platform == "local":
@@ -4056,7 +4076,9 @@ def main():
             owner, repo_name, token, svn_url=svn_url, svn_username=svn_user
         )
     elif platform == "bitbucket":
-        platform_client = BitbucketClient(owner, repo_name, token)
+        platform_client = BitbucketClient(
+            owner, repo_name, token, username=bitbucket_user
+        )
     elif platform == "gitlab":
         platform_client = GitLabClient(owner, repo_name, token)
     else:
@@ -4087,7 +4109,13 @@ def main():
                 )
             else:
                 repo_path = str(
-                    clone_repo(f"{owner}/{repo_name}", temp_dir, token, platform)
+                    clone_repo(
+                        f"{owner}/{repo_name}",
+                        temp_dir,
+                        token,
+                        platform,
+                        bitbucket_username=bitbucket_user,
+                    )
                 )
         except Exception as e:
             logger.error(f"Failed to clone repository: {e}")

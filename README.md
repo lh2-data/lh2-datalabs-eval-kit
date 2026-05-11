@@ -95,6 +95,15 @@ pip install -r requirements.txt
    - ✅ `read_user` *(recommended)*
 3. Copy the token — it starts with `glpat-`.
 
+### Bitbucket Cloud Token
+
+Any one of the following is enough:
+
+- **Repository / Workspace / Project Access Token** *(recommended)*:
+  Bitbucket → Repository **Settings → Access tokens → Create token** with scopes `repository` and `pullrequest` (starts with `ATBB…`). Bearer auth, no username needed.
+- **Atlassian API token**: Atlassian → **Manage account → Security → API tokens → Create API token**. Bearer auth, no username needed.
+- **App Password** *(legacy)*: Bitbucket → **Personal settings → App passwords → Create app password** with `Repositories: Read` and `Pull requests: Read`. Requires HTTP Basic auth, so you must **also** set `BITBUCKET_USERNAME` (or pass `--bitbucket-username`).
+
 ---
 
 ## Configuration (.env File)
@@ -105,6 +114,11 @@ Create a `.env` file in the project root to avoid passing tokens on every comman
 # ── Platform Tokens ──────────────────────────────────────
 GITHUB_TOKEN=ghp_YourGitHubTokenHere
 GITLAB_TOKEN=glpat-YourGitLabTokenHere
+BITBUCKET_TOKEN=ATBB-YourBitbucketTokenHere      # Access Token, API token, or App Password
+
+# ── Bitbucket App-Password auth (optional) ───────────────
+# Only set this when BITBUCKET_TOKEN is an App Password.
+# BITBUCKET_USERNAME=your_bitbucket_username
 
 # ── GitLab self-hosted (optional) ────────────────────────
 # GITLAB_URL=https://gitlab.mycompany.com
@@ -187,6 +201,19 @@ python repo_evaluator.py my-org/my-private-repo \
 python repo_evaluator.py gitlab:my-group/my-project \
   --token glpat-xxx \
   --platform gitlab \
+  --json
+
+# Evaluate a Bitbucket Cloud repo (Access Token / API token — Bearer auth)
+python repo_evaluator.py bitbucket:my-workspace/my-repo \
+  --token ATBB-xxx \
+  --platform bitbucket \
+  --json
+
+# Evaluate a Bitbucket Cloud repo using an App Password (HTTP Basic)
+python repo_evaluator.py bitbucket:my-workspace/my-repo \
+  --token YOUR_APP_PASSWORD \
+  --bitbucket-username your_username \
+  --platform bitbucket \
   --json
 
 # Fast evaluation — skip heavy analysis steps
@@ -304,8 +331,10 @@ All CLI arguments have corresponding environment variables. This is useful for C
 | `GITHUB_TOKEN` / `GH_TOKEN` | `--token` (GitHub) | `ghp_xxx` |
 | `GITLAB_TOKEN` / `GL_TOKEN` | `--token` (GitLab) | `glpat-xxx` |
 | `GITLAB_URL` | `--gitlab-url` | `https://gitlab.mycompany.com` |
+| `BITBUCKET_TOKEN` / `BB_TOKEN` | `--token` (Bitbucket) | `ATBB-xxx` (or App Password) |
+| `BITBUCKET_USERNAME` | `--bitbucket-username` | `your_bitbucket_username` |
 | `OPENAI_API_KEY` | Passed through to evaluator | `sk-xxx` |
-| `EVAL_PLATFORM` | `--platform` | `github` |
+| `EVAL_PLATFORM` | `--platform` | `github` / `gitlab` / `bitbucket` |
 | `EVAL_ORGS` | `--org` | `my-org,other-org` |
 | `EVAL_EXCLUDE_ORGS` | `--exclude-org` | `archived-org` |
 | `EVAL_EXCLUDE_REPOS` | `--exclude-repo` | `org/old-repo,org/test-repo` |
@@ -359,6 +388,18 @@ python run_all_repos.py --platform gitlab --run --org my-group
 python run_all_repos.py --platform gitlab --run \
   --gitlab-url https://gitlab.mycompany.com \
   --token glpat-xxx
+
+# ── Bitbucket Cloud ───────────────────────────────────────
+
+# Preview all workspaces and repositories (Bearer auth)
+python run_all_repos.py --platform bitbucket --dry-run --token ATBB-xxx
+
+# App Password (HTTP Basic) — also requires --bitbucket-username
+python run_all_repos.py --platform bitbucket --dry-run \
+  --token YOUR_APP_PASSWORD --bitbucket-username your_username
+
+# Evaluate everything in a specific workspace
+python run_all_repos.py --platform bitbucket --run --org my-workspace
 ```
 
 ### Output Structure
